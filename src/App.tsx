@@ -641,7 +641,7 @@ class Game {
     ctx.font = "16px Arial";
     
     
-    ctx.fillText(`Level: ${this.dungeon_level}`, 20, SCREEN_HEIGHT - 60);
+    ctx.fillText(`Level: ${this.dungeon_level}`, 20, SCREEN_HEIGHT - 75);
     
     // Controls
     ctx.fillText("WASD: Move", SCREEN_WIDTH - 200, SCREEN_HEIGHT - 20);
