@@ -13,7 +13,6 @@ import { useEffect, useState, useRef } from "react";
 
 
 
-
 // --- Inline MonadGamesId component ---
 const MonadGamesId = () => {
   const { authenticated, user, ready, logout, login } = usePrivy();
@@ -178,7 +177,6 @@ const FLOOR_PALETTE = [
   '#230F19', '#32141E', '#190505', '#5A2832'
 ];
 
-
 // Helper function to load base64 images
 function loadBase64Image(base64: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -187,6 +185,69 @@ function loadBase64Image(base64: string): Promise<HTMLImageElement> {
     img.onerror = reject;
     img.src = base64;
   });
+}
+
+// Leaderboard entry interface
+interface LeaderboardEntry {
+  walletAddress: string;
+  username: string;
+  score: number;
+  level: number;
+  timestamp: number;
+}
+
+// Leaderboard class
+class Leaderboard {
+  private entries: LeaderboardEntry[] = [];
+  private static LOCAL_STORAGE_KEY = 'dungeon_crawler_leaderboard';
+  private maxEntries = 10;
+
+  constructor() {
+    this.load();
+  }
+
+  // Load from localStorage
+  private load() {
+    const saved = localStorage.getItem(Leaderboard.LOCAL_STORAGE_KEY);
+    if (saved) {
+      this.entries = JSON.parse(saved);
+    }
+  }
+
+  // Save to localStorage
+  private save() {
+    localStorage.setItem(Leaderboard.LOCAL_STORAGE_KEY, JSON.stringify(this.entries));
+  }
+
+  // Add a new entry
+  addEntry(entry: Omit<LeaderboardEntry, 'timestamp'>) {
+    const newEntry = {
+      ...entry,
+      timestamp: Date.now()
+    };
+
+    // Add to entries and sort by score (descending)
+    this.entries.push(newEntry);
+    this.entries.sort((a, b) => b.score - a.score);
+    
+    // Keep only top entries
+    if (this.entries.length > this.maxEntries) {
+      this.entries = this.entries.slice(0, this.maxEntries);
+    }
+
+    this.save();
+  }
+
+  // Get all entries
+  getEntries(): LeaderboardEntry[] {
+    return [...this.entries];
+  }
+
+  // Clear the leaderboard
+  clear() {
+    this.entries = [];
+    this.save();
+  }
 }
 
 // A single tile on the game map
@@ -407,6 +468,12 @@ class Game {
   dungeon_level: number;
   wall_color: string;
   floor_color: string;
+  leaderboard: Leaderboard;
+  game_over: boolean;
+  gameDuration: number = 1 * 60 * 1000; // 10 minutes in milliseconds
+  gameStartTime: number = 0;
+  timeRemaining: number = 0;
+  timerInterval: NodeJS.Timeout | null = null;
 
   constructor(playerName: string, walletAddress?: string) {
     this.map_width = 100;
@@ -423,7 +490,34 @@ class Game {
     this.dungeon_level = 1;
     this.wall_color = STONE;
     this.floor_color = DARK_GRAY;
+    this.leaderboard = new Leaderboard();
+    this.game_over = false;
+    this.startTimer();
     this.generate_dungeon();
+  }
+
+  // Timer methods
+  startTimer() {
+    this.gameStartTime = Date.now();
+    this.timeRemaining = this.gameDuration;
+    this.timerInterval = setInterval(() => this.updateTimer(), 1000);
+  }
+
+  updateTimer() {
+      const elapsed = Date.now() - this.gameStartTime;
+      this.timeRemaining = Math.max(0, this.gameDuration - elapsed);
+
+      if (this.timeRemaining <= 0) {
+        this.endGameFromTimer();
+      }
+  }
+
+  endGameFromTimer() {
+    if (this.timerInterval) {
+      clearInterval(this.timerInterval);
+      this.timerInterval = null;
+    }
+    this.gameOver();
   }
 
   async initializeSprites() {
@@ -432,6 +526,26 @@ class Game {
       this.exit.loadSprite(),
       ...this.items.map(item => item.loadSprite())
     ]);
+  }
+
+  // Add a method to handle game over
+  gameOver() {
+      if (this.timerInterval) {
+        clearInterval(this.timerInterval);
+        this.timerInterval = null;
+      }
+      this.game_over = true;
+      this.game_state = "game_over";
+      
+      // Add to leaderboard if score > 0
+      if (this.player.score > 0) {
+        this.leaderboard.addEntry({
+          walletAddress: this.player.walletAddress,
+          username: this.player.username || "Anonymous", // This will now use the actual username
+          score: this.player.score,
+          level: this.dungeon_level
+        });
+      }
   }
 
   async generate_dungeon() {
@@ -634,77 +748,107 @@ class Game {
     this.camera_y = Math.max(0, Math.min(this.camera_y, max_y));
   }
 
+
+
+
+
+
+
   move_player(dx: number, dy: number) {
-    if (!this.player.canMove()) return;
-    
-    const new_x = this.player.x + dx;
-    const new_y = this.player.y + dy;
-    
-    // Update facing direction
-    if (dx > 0) {
-      this.player.last_direction = "right";
-    } else if (dx < 0) {
-      this.player.last_direction = "left";
-    }
-    
-    if (new_x < 0 || new_y < 0 || new_x >= this.map_width || new_y >= this.map_height) {
-      this.message = "You can't go that way!";
-      this.message_time = Date.now();
-      return;
-    }
-    
-    if (this.tiles[new_y][new_x].type === 0) {
-      this.message = "You can't walk through walls!";
-      this.message_time = Date.now();
-      return;
-    }
-    
-    // Check for items at new position
-    const itemIndex = this.items.findIndex(item => item.x === new_x && item.y === new_y);
-    if (itemIndex !== -1) {
-      const item = this.items[itemIndex];
+      if (!this.player.canMove() || this.game_over) return;
       
-      if (item.type === "gold") {
-        this.player.gold += item.value;
-        this.player.score += item.value * 10; // 10 points per gold value
-        this.message = `Picked up ${item.value} gold! (+${item.value * 10} points)`;
-      } else {
-        // Award points for other items
-        const points = {
-          "potion": 50,
-          "weapon": 100,
-          "armor": 100
-        }[item.type] || 0;
-        
-        this.player.score += points;
-        this.message = `Picked up ${item.name}! (+${points} points)`;
+      const new_x = this.player.x + dx;
+      const new_y = this.player.y + dy;
+      
+      // Update facing direction
+      if (dx > 0) {
+        this.player.last_direction = "right";
+      } else if (dx < 0) {
+        this.player.last_direction = "left";
       }
       
-      this.items.splice(itemIndex, 1);
-      this.message_time = Date.now();
-    }
-    
-    // Check if moving to exit
-    if (new_x === this.exit.x && new_y === this.exit.y) {
-      const exitPoints = 500 * this.dungeon_level; // More points for higher levels
-      this.player.score += exitPoints;
-      this.dungeon_level += 1;
-      this.message = `Descending to dungeon level ${this.dungeon_level}! (+${exitPoints} points)`;
-      this.message_time = Date.now();
-      this.generate_dungeon();
-      return;
-    }
-    
-    this.player.x = new_x;
-    this.player.y = new_y;
-    this.player.recordMove();
-    this.update_fov();
+      if (new_x < 0 || new_y < 0 || new_x >= this.map_width || new_y >= this.map_height) {
+        this.message = "You can't go that way!";
+        this.message_time = Date.now();
+        return;
+      }
+      
+      if (this.tiles[new_y][new_x].type === 0) {
+        this.message = "You can't walk through walls!";
+        this.message_time = Date.now();
+        return;
+      }
+      
+      // Check for items at new position
+      const itemIndex = this.items.findIndex(item => item.x === new_x && item.y === new_y);
+      if (itemIndex !== -1) {
+        const item = this.items[itemIndex];
+        
+        if (item.type === "gold") {
+          this.player.gold += item.value;
+          this.player.score += item.value * 10;
+          this.message = `Picked up ${item.value} gold! (+${item.value * 10} points)`;
+        } else if (item.type === "potion") {
+          // Add exactly 1 minute (30,000 ms) to the remaining time
+          const currentElapsed = Date.now() - this.gameStartTime;
+          const newRemaining = (this.gameDuration - currentElapsed) + 30000;
+          this.gameDuration = currentElapsed + newRemaining; // Adjust total duration
+          this.player.score += 50;
+          this.message = `Picked up a time potion! (+30 sec) (+50 points)`;
+        } else {
+          // Award points for other items
+          const points = {
+            "weapon": 100,
+            "armor": 100
+          }[item.type] || 0;
+          
+          this.player.score += points;
+          this.message = `Picked up ${item.name}! (+${points} points)`;
+        }
+        
+        this.items.splice(itemIndex, 1);
+        this.message_time = Date.now();
+      }
+      
+      // Rest of the method remains unchanged...
+      // Check if moving to exit
+      if (new_x === this.exit.x && new_y === this.exit.y) {
+        const exitPoints = 500 * this.dungeon_level;
+        this.player.score += exitPoints;
+        this.dungeon_level += 1;
+        this.message = `Descending to dungeon level ${this.dungeon_level}! (+${exitPoints} points)`;
+        this.message_time = Date.now();
+        this.generate_dungeon();
+        return;
+      }
+      
+      this.player.x = new_x;
+      this.player.y = new_y;
+      this.player.recordMove();
+      this.update_fov();
   }
+
+
+
+
+
+
+
+
+
+
+
+
 
   draw(ctx: CanvasRenderingContext2D) {
     // Clear screen
     ctx.fillStyle = BLACK;
     ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+    
+    if (this.game_over) {
+      this.drawGameOverScreen(ctx);
+      return;
+    }
     
     // Calculate visible area
     const start_x = Math.max(0, Math.floor(this.camera_x / GRID_SIZE));
@@ -777,6 +921,55 @@ class Game {
     this.draw_minimap(ctx);
   }
 
+  // Draw game over screen with leaderboard
+  drawGameOverScreen(ctx: CanvasRenderingContext2D) {
+    // Dark background
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+    ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+    
+    // Game over text
+    ctx.fillStyle = WHITE;
+    ctx.font = '48px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('TIME UP!', SCREEN_WIDTH / 2, 100);
+    ctx.font = '24px Arial';
+    ctx.fillText('Your adventure has reached its limit', SCREEN_WIDTH / 2, 140);
+    
+    // Player stats
+    ctx.fillText(`Final Score: ${this.player.score}`, SCREEN_WIDTH / 2, 180);
+    ctx.fillText(`Level Reached: ${this.dungeon_level}`, SCREEN_WIDTH / 2, 210);
+    ctx.fillText(`Gold Collected: ${this.player.gold}`, SCREEN_WIDTH / 2, 240);
+    
+    // Leaderboard title
+    ctx.font = '36px Arial';
+    ctx.fillText('LEADERBOARD', SCREEN_WIDTH / 2, 300);
+    
+    // Leaderboard entries
+    const entries = this.leaderboard.getEntries();
+    ctx.font = '20px Arial';
+    
+    if (entries.length === 0) {
+      ctx.fillText('No entries yet!', SCREEN_WIDTH / 2, 350);
+    } else {
+      entries.forEach((entry, index) => {
+        const y = 350 + index * 30;
+        const text = `${index + 1}. ${entry.username}: ${entry.score} (Level ${entry.level})`;
+        const color = entry.walletAddress === this.player.walletAddress ? GREEN : WHITE;
+        
+        ctx.fillStyle = color;
+        ctx.fillText(text, SCREEN_WIDTH / 2, y);
+      });
+    }
+    
+    // Restart instructions
+    ctx.fillStyle = WHITE;
+    ctx.font = '24px Arial';
+    ctx.fillText('Press R to restart', SCREEN_WIDTH / 2, SCREEN_HEIGHT - 100);
+    
+    // Reset text alignment
+    ctx.textAlign = 'left';
+  }
+
   darkenColor(color: string): string {
     // Simple function to darken a hex color
     const num = parseInt(color.substring(1), 16);
@@ -784,10 +977,10 @@ class Game {
     const g = Math.floor(((num >> 8) & 0x00FF) / 2);
     const b = Math.floor((num & 0x0000FF) / 2);
     return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`;
-  }
-  
+  }  
+
   draw_ui(ctx: CanvasRenderingContext2D) {
-      // Draw semi-transparent UI panel (same as before)
+      // Draw semi-transparent UI panel
       ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
       ctx.fillRect(0, SCREEN_HEIGHT - 100, SCREEN_WIDTH, 100);
     
@@ -796,23 +989,30 @@ class Game {
       const uiTop = SCREEN_HEIGHT - 100;
       const textY = uiTop + 30; // Starting Y position for text
       
-      // Player info - now centered
-      ctx.textAlign = "center"; // Center text horizontally
+      // Player info - centered
+      ctx.textAlign = "center";
       ctx.fillStyle = WHITE;
       ctx.font = "16px Arial";
-      ctx.fillText(`Level: ${this.dungeon_level}`, centerX - 100, textY);
+      ctx.fillText(`Level: ${this.dungeon_level}`, centerX - 150, textY);
+      
+      // Timer display (minutes:seconds)
+      const minutes = Math.floor(this.timeRemaining / 60000);
+      const seconds = Math.floor((this.timeRemaining % 60000) / 1000);
+      const timeText = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+      ctx.fillStyle = this.timeRemaining < 30000 ? '#FF0000' : WHITE; // Red when under 30 seconds
+      ctx.fillText(`Time: ${timeText}`, centerX - 50, textY);
       
       ctx.fillStyle = YELLOW;
-      ctx.fillText(`Gold: ${this.player.gold}`, centerX, textY);
+      ctx.fillText(`Gold: ${this.player.gold}`, centerX + 50, textY);
       
       ctx.fillStyle = GREEN;
-      ctx.fillText(`Score: ${this.player.score}`, centerX + 100, textY);
+      ctx.fillText(`Score: ${this.player.score}`, centerX + 150, textY);
       
       // Controls - centered at bottom
       ctx.fillStyle = WHITE;
       ctx.fillText("WASD: Move", centerX, SCREEN_HEIGHT - 20);
       
-      // Reset text alignment for other drawing operations
+      // Reset text alignment
       ctx.textAlign = "left";
   }
 
@@ -860,6 +1060,14 @@ class Game {
     ctx.lineWidth = 1;
     ctx.strokeRect(MINIMAP_POSITION.x, MINIMAP_POSITION.y, MINIMAP_WIDTH, MINIMAP_HEIGHT);
   }
+
+  // Clean up resources
+  destroy() {
+    if (this.timerInterval) {
+      clearInterval(this.timerInterval);
+      this.timerInterval = null;
+    }
+  }
 }
 
 // React component for the game
@@ -894,14 +1102,28 @@ function DungeonCrawler({ username }: { username: string }) {
     if (!ctx) return;
 
     // Initialize game with wallet address and username
-    gameRef.current = new Game("Player", walletAddress);
+    gameRef.current = new Game(username || "Player", walletAddress);
     const game = gameRef.current;
+
+    // Set the player's username if available
+    if (username) {
+      game.player.username = username;
+    }
 
     // Initialize sprites
     game.initializeSprites().then(() => {
-      // Key handlers
       const handleKeyDown = (e: KeyboardEvent) => {
-        keysRef.current.add(e.key.toLowerCase());
+        const key = e.key.toLowerCase();
+        keysRef.current.add(key);
+
+        // Handle restart when game is over
+        if (key === 'r' && game.game_over) {
+          if (gameRef.current) {
+            gameRef.current.destroy();
+          }
+          gameRef.current = new Game(username || "Player", walletAddress);
+          gameRef.current.initializeSprites();
+        }
       };
 
       const handleKeyUp = (e: KeyboardEvent) => {
@@ -911,45 +1133,51 @@ function DungeonCrawler({ username }: { username: string }) {
       window.addEventListener('keydown', handleKeyDown);
       window.addEventListener('keyup', handleKeyUp);
 
-      // Game loop
       const gameLoop = () => {
         const game = gameRef.current;
         if (!game) return;
 
-        const keys = keysRef.current;
-        let dx = 0, dy = 0;
+        // Only process movement if game is not over
+        if (!game.game_over) {
+          const keys = keysRef.current;
+          let dx = 0, dy = 0;
 
-        if (keys.has('w') || keys.has('arrowup')) dy = -1;
-        if (keys.has('s') || keys.has('arrowdown')) dy = 1;
-        if (keys.has('a') || keys.has('arrowleft')) dx = -1;
-        if (keys.has('d') || keys.has('arrowright')) dx = 1;
+          if (keys.has('w') || keys.has('arrowup')) dy = -1;
+          if (keys.has('s') || keys.has('arrowdown')) dy = 1;
+          if (keys.has('a') || keys.has('arrowleft')) dx = -1;
+          if (keys.has('d') || keys.has('arrowright')) dx = 1;
 
-        if (dx !== 0 || dy !== 0) {
-          game.move_player(dx, dy);
+          if (dx !== 0 || dy !== 0) {
+            game.move_player(dx, dy);
+          }
+
+          game.update_camera();
         }
 
-        game.update_camera();
         game.draw(ctx);
-
         animationRef.current = requestAnimationFrame(gameLoop);
       };
 
       animationRef.current = requestAnimationFrame(gameLoop);
 
-      // Cleanup
       return () => {
         window.removeEventListener('keydown', handleKeyDown);
         window.removeEventListener('keyup', handleKeyUp);
         if (animationRef.current) {
           cancelAnimationFrame(animationRef.current);
         }
+        if (gameRef.current) {
+          gameRef.current.destroy();
+        }
       };
     });
 
     return () => {
-      // Clean up game resources when component unmounts
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current);
+      }
+      if (gameRef.current) {
+        gameRef.current.destroy();
       }
       gameRef.current = null;
     };
@@ -986,11 +1214,36 @@ function DungeonCrawler({ username }: { username: string }) {
 
 
 
-
-// Updated App component
 function App() {
-  const { authenticated, ready } = usePrivy();
-  const [username] = useState("");
+  const { authenticated, ready, user } = usePrivy();
+  const [username, setUsername] = useState("");
+
+  useEffect(() => {
+    if (ready && authenticated && user) {
+      const fetchUsername = async (walletAddress: string) => {
+        try {
+          const response = await fetch(`https://monad-games-id-site.vercel.app/api/check-wallet?wallet=${walletAddress}`);
+          if (response.ok) {
+            const data = await response.json();
+            if (data.hasUsername) {
+              setUsername(data.user.username);
+            }
+          }
+        } catch (error) {
+          console.error("Failed to fetch username:", error);
+        }
+      };
+
+      const crossAppAccount = user.linkedAccounts.find(
+        acc => acc.type === "cross_app" && acc.providerApp.id === "cmd8euall0037le0my79qpz42"
+      ) as CrossAppAccountWithMetadata;
+
+      if (crossAppAccount?.embeddedWallets.length > 0) {
+        const walletAddress = crossAppAccount.embeddedWallets[0].address;
+        fetchUsername(walletAddress);
+      }
+    }
+  }, [ready, authenticated, user]);
 
   if (!ready) {
     return <div>Loading...</div>;
