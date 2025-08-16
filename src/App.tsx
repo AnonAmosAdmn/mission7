@@ -1058,8 +1058,7 @@ function DungeonCrawler({ username }: { username: string }) {
           gameRef.current.player.username = gameUsername;
           gameRef.current.initializeSprites();
         }
-
-
+      };
 
       const handleKeyUp = (e: KeyboardEvent) => {
         keysRef.current.delete(e.key.toLowerCase());
@@ -1107,7 +1106,7 @@ function DungeonCrawler({ username }: { username: string }) {
         }
       };
     });
-
+    
     return () => {
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current);
