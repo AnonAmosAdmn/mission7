@@ -1181,7 +1181,14 @@ function DungeonCrawler({ username }: { username: string }) {
       }
       gameRef.current = null;
     };
-  }, [walletAddress, username]);
+  }, [walletAddress]); // Remove username dependency
+
+  // Separate effect to update username when it changes, without re-initializing the game
+  useEffect(() => {
+    if (gameRef.current && username) {
+      gameRef.current.player.username = username;
+    }
+  }, [username]);
 
   if (!walletAddress) {
     return (
