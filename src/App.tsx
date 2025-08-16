@@ -1059,15 +1059,7 @@ function DungeonCrawler({ username }: { username: string }) {
           gameRef.current.initializeSprites();
         }
 
-        // Handle leaderboard refresh when game is over
-        if (key === "f" && game.game_over) {
-          game.player.username =
-            usernameRef.current || `Player_${walletAddress.slice(0, 6)}`;
-          game.leaderboard.refresh().catch((error) => {
-            console.error("Failed to refresh leaderboard:", error);
-          });
-        }
-      };
+
 
       const handleKeyUp = (e: KeyboardEvent) => {
         keysRef.current.delete(e.key.toLowerCase());
